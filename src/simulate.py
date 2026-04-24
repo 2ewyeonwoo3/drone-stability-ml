@@ -10,8 +10,8 @@ from gym_pybullet_drones.utils.enums import DroneModel, Physics
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 
 
-def run_simulation(p_gain_mult: float, duration_sec: int, output_path: str):
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+def run_simulation(p_gain_mult: float, duration_sec: int, output_path: str, seed: int):
+    np.random.seed(seed)
 
     env = CtrlAviary(
         drone_model=DroneModel.CF2X,
@@ -64,11 +64,14 @@ def run_simulation(p_gain_mult: float, duration_sec: int, output_path: str):
             "pitch": current_rpy[1],
             "yaw": current_rpy[2],
             "p_gain_mult": p_gain_mult,
+            "seed": seed,
         })
 
         time.sleep(env.CTRL_TIMESTEP)
 
     env.close()
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with open(output_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=rows[0].keys())
@@ -82,12 +85,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--p_gain_mult", type=float, default=1.0)
     parser.add_argument("--duration", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", type=str, default="results/logs/run_001.csv")
 
     args = parser.parse_args()
 
     run_simulation(
-        p_gain_mult=args.p_gain_mult,
-        duration_sec=args.duration,
-        output_path=args.output,
-    )
+      p_gain_mult=args.p_gain_mult,
+      duration_sec=args.duration,
+      output_path=args.output,
+      seed=args.seed,
+  )
