@@ -435,4 +435,4 @@ TSWLatexianTemp*
 #*Notes.bib
 
 # pybullet 런타임 실행 시 자동 생성되는 vendored 애셋
-gym-pybullet-drones/pybullet_data/
+gym-pybullet-drones/
