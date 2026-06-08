@@ -1,0 +1,13 @@
+run_id,p_gain_mult,seed,duration,target_z,payload_factor,payload_start,payload_ramp,wind_mode,wind_mag,wind_start,wind_gust_hz,output
+stable_42,1.0,42,9,1.0,1.0,0,0,none,0,0,1,results/logs/dist/stable_42.csv
+stable_123,1.0,123,9,1.0,1.0,0,0,none,0,0,1,results/logs/dist/stable_123.csv
+pl15_ramp4_42,1.0,42,12,1.0,1.5,2,4,none,0,0,1,results/logs/dist/pl15_ramp4_42.csv
+pl20_ramp4_42,1.0,42,12,1.0,2.0,2,4,none,0,0,1,results/logs/dist/pl20_ramp4_42.csv
+pl25_ramp3_7,1.0,7,9,1.0,2.5,2,3,none,0,0,1,results/logs/dist/pl25_ramp3_7.csv
+pl25_ramp3_123,1.0,123,9,1.0,2.5,2,3,none,0,0,1,results/logs/dist/pl25_ramp3_123.csv
+pl30_ramp4_42,1.0,42,9,1.0,3.0,2,4,none,0,0,1,results/logs/dist/pl30_ramp4_42.csv
+pl20_turb_42,1.0,42,12,1.0,2.0,2,4,turbulent,0.004,2,1,results/logs/dist/pl20_turb_42.csv
+pl18_gust_7,1.0,7,12,1.0,1.8,2,4,gust,0.005,2,2,results/logs/dist/pl18_gust_7.csv
+gain085_pl22_42,0.85,42,12,1.0,2.2,2,4,none,0,0,1,results/logs/dist/gain085_pl22_42.csv
+wind_const_42,1.0,42,9,1.0,1.0,0,0,constant,0.03,3,1,results/logs/dist/wind_const_42.csv
+wind_turb_123,1.0,123,9,1.0,1.0,0,0,turbulent,0.02,3,1,results/logs/dist/wind_turb_123.csv
