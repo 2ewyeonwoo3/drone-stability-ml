@@ -205,3 +205,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# pybullet 런타임 실행 시 자동 생성되는 vendored 애셋
+gym-pybullet-drones/
