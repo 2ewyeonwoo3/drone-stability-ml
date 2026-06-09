@@ -121,8 +121,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
 if __name__ == "__main__":
     args = _build_parser().parse_args()
-
-    global SEND_DELAY_SEC
     SEND_DELAY_SEC = args.send_delay
 
     producer = _make_producer()
