@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from test_stability_metrics import (
+from stability_metrics import (
     altitude_rmse, attitude_max_angle, angular_rate_rms, vibration_ratio,
     crash_indicator, convergence_failure, evaluate_window, StabilityThresholds,
 )
