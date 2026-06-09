@@ -210,7 +210,8 @@ __marimo__/
 gym-pybullet-drones/
 
 # 환경변수 파일 — AWS 키 등 민감 정보 포함 가능
-envs/
+.env.*
+!.env.local
 
 # Spark 스트리밍 출력 (로컬)
 data/streaming/
