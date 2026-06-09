@@ -208,3 +208,11 @@ __marimo__/
 
 # pybullet 런타임 실행 시 자동 생성되는 vendored 애셋
 gym-pybullet-drones/
+
+# 환경변수 파일 — AWS 키 등 민감 정보 포함 가능
+envs/
+
+# Spark 스트리밍 출력 (로컬)
+data/streaming/
+
+# python-dotenv (선택 의존성)

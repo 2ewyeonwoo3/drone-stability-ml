@@ -1,23 +1,17 @@
 """
 producer.py — 드론 시뮬레이터를 Kafka producer로 연결.
 
-핵심 설계 결정:
-  event_time = epoch_base + step / ctrl_freq  (시뮬 시간 기반 합성)
+핵심 설계 결정 (Stage 1 확정, 이 전환에서 절대 변경 없음):
+  - event_time = EPOCH_BASE + step/ctrl_freq  (시뮬 시간 기반, datetime.now() 금지)
+  - ctrl_freq를 메시지에 포함 (Spark consumer FFT UDF가 fs로 사용)
+  - 파티션 키 = drone_id
 
-  datetime.now()를 쓰면 안 되는 이유:
-    헤드리스 sim이 실시간보다 ~6배 빠르게 돌아서, 수십 초 분량의 시뮬 데이터가
-    벽시계 몇 초에 압축돼 들어옴.
-    그러면 Spark의 window(2초)가 "시뮬 2초"가 아니라 "벽시계 2초"가 돼
-    FFT 주파수 해석도 윈도우 경계도 전부 물리적으로 무의미해짐.
+연결 지점: config.py(환경변수)에서 읽음.
+전환 방법: ENV_FILE=.env.s3 python src/producer.py
 
-  ctrl_freq도 메시지에 포함:
-    Spark consumer의 FFT UDF가 실제 샘플링 레이트(fs)로 사용.
-    pyb_freq != ctrl_freq인 경우 잘못된 주파수 대역을 보게 되는 걸 방지.
-
-실행:
-  python src/producer.py
-  python src/producer.py --p_gain_mult 1.0 --payload_factor 2.5 \\
-      --payload_start 2 --payload_ramp 3 --duration 9
+보안:
+  현재 PLAINTEXT + 보안그룹(내 IP만 9092 허용) 방식.
+  데모/증빙 목적에 충분. SASL_SSL은 현재 미검증(스트레치 옵션).
 """
 
 from __future__ import annotations
@@ -30,99 +24,93 @@ from datetime import datetime, timezone
 from kafka import KafkaProducer
 from kafka.errors import NoBrokersAvailable
 
+from config import cfg
 from simulate import run_simulation
-
-# ── 설정 ──────────────────────────────────────────────────────────────────────
-KAFKA_BOOTSTRAP = "localhost:9092"
-TOPIC = "drone-telemetry"
 
 # 시뮬 시간을 실제 epoch에 고정하는 기준점.
 # 고정값이어야 여러 런이 같은 타임라인에서 재현 가능.
 EPOCH_BASE = datetime(2025, 1, 1, tzinfo=timezone.utc).timestamp()
 
-# 행 전송 사이 인위적 딜레이(초). 0이면 전속력으로 전송.
-# Spark consumer의 watermark 지연을 눈으로 확인하고 싶을 때 0.005 정도로 올림.
 SEND_DELAY_SEC = 0.0
 
 
 def _make_producer(retries: int = 5) -> KafkaProducer:
     """Kafka에 연결 가능할 때까지 재시도하며 producer 생성."""
+    print(cfg.summary())
+
+    # 현재 검증된 경로: PLAINTEXT (로컬 + EC2 자체호스팅)
+    # SASL_SSL은 보안그룹 방식으로 대체하므로 지금은 단순 연결만
+    kafka_kwargs = {
+        "bootstrap_servers": cfg.kafka_bootstrap,
+        "value_serializer": lambda v: json.dumps(v).encode("utf-8"),
+        "key_serializer":   lambda k: str(k).encode("utf-8"),
+        "retries": 3,
+        "acks": "all",
+    }
+
+    # SASL 분기: "있으면 읽는다" 수준 — 현재 실제 검증 안 함 (스트레치)
+    if not cfg.is_plaintext:
+        import ssl
+        kafka_kwargs["security_protocol"] = cfg.kafka_security_protocol
+        kafka_kwargs["ssl_context"] = ssl.create_default_context()
+
     for attempt in range(1, retries + 1):
         try:
-            producer = KafkaProducer(
-                bootstrap_servers=KAFKA_BOOTSTRAP,
-                value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-                key_serializer=lambda k: str(k).encode("utf-8"),
-                # 전송 실패 시 최대 3회 재시도
-                retries=3,
-                # acks=all: 브로커 수신 확인 후 진행 (데이터 유실 방지)
-                acks="all",
-            )
-            print(f"[producer] Kafka 연결 성공 ({KAFKA_BOOTSTRAP})")
+            producer = KafkaProducer(**kafka_kwargs)
+            print(f"[producer] Kafka 연결 성공 ({cfg.kafka_bootstrap})")
             return producer
         except NoBrokersAvailable:
             print(f"[producer] Kafka 미응답, {attempt}/{retries} 재시도 (5초 대기)...")
             time.sleep(5)
-    raise RuntimeError("Kafka 브로커에 연결할 수 없음. docker compose up 상태 확인 필요")
+    raise RuntimeError(
+        f"Kafka 브로커 연결 실패 ({cfg.kafka_bootstrap}). "
+        "로컬: docker compose up 확인 / EC2: 보안그룹 9092 포트 + advertised.listeners 확인"
+    )
 
 
-def stream_to_kafka(
-    producer: KafkaProducer,
-    drone_id_tag: int = 0,
-    **sim_kwargs,
-) -> int:
-    """시뮬레이터를 돌리고 텔레메트리 행을 Kafka에 전송.
-
-    반환값: 전송한 행 수
-    """
+def stream_to_kafka(producer: KafkaProducer, drone_id_tag: int = 0, **sim_kwargs) -> int:
+    """시뮬레이터를 돌리고 텔레메트리 행을 Kafka에 전송. 반환값: 전송 행 수."""
     ctrl_freq = sim_kwargs.get("ctrl_freq", 240)
-
     print(f"[producer] 시뮬 시작: drone_id={drone_id_tag}, ctrl_freq={ctrl_freq}Hz")
+
     rows = run_simulation(**sim_kwargs, drone_id_tag=drone_id_tag, output_path=None)
 
     for row in rows:
-        # ── event_time 합성 ────────────────────────────────────────────────
-        # 시뮬 시간(step / ctrl_freq)을 epoch_base에 더해 ISO 타임스탬프 생성.
-        # Spark의 to_timestamp()가 그대로 파싱할 수 있는 형식으로 직렬화.
+        # event_time 합성: 시뮬 시간 기반 (datetime.now() 금지)
         sim_t: float = row["step"] / ctrl_freq
         event_time_iso = datetime.fromtimestamp(
             EPOCH_BASE + sim_t, tz=timezone.utc
         ).isoformat()
 
         msg = {**row, "event_time": event_time_iso}
-
-        # 파티션 키: drone_id — 같은 드론의 메시지가 같은 파티션에 순서대로 들어감
-        producer.send(TOPIC, key=drone_id_tag, value=msg)
+        producer.send(cfg.kafka_topic, key=drone_id_tag, value=msg)
 
         if SEND_DELAY_SEC > 0:
             time.sleep(SEND_DELAY_SEC)
 
     producer.flush()
-    print(f"[producer] 전송 완료: {len(rows)}행 → 토픽 '{TOPIC}'")
+    print(f"[producer] 전송 완료: {len(rows)}행 → 토픽 '{cfg.kafka_topic}'")
     return len(rows)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="드론 텔레메트리 Kafka producer")
-    parser.add_argument("--p_gain_mult", type=float, default=1.0)
-    parser.add_argument("--duration", type=float, default=9.0)
-    parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--drone_id", type=int, default=0)
-    # 외란 옵션 (기본값 = 점진 붕괴 시나리오)
+    parser.add_argument("--p_gain_mult",    type=float, default=1.0)
+    parser.add_argument("--duration",       type=float, default=9.0)
+    parser.add_argument("--seed",           type=int,   default=7)
+    parser.add_argument("--drone_id",       type=int,   default=0)
     parser.add_argument("--payload_factor", type=float, default=2.5)
-    parser.add_argument("--payload_start", type=float, default=2.0)
-    parser.add_argument("--payload_ramp", type=float, default=3.0)
-    parser.add_argument("--wind_mode", type=str, default="none")
-    parser.add_argument("--wind_mag", type=float, default=0.0)
-    parser.add_argument("--send_delay", type=float, default=0.0,
-                        help="행 간 전송 딜레이(초). 0=전속력")
+    parser.add_argument("--payload_start",  type=float, default=2.0)
+    parser.add_argument("--payload_ramp",   type=float, default=3.0)
+    parser.add_argument("--wind_mode",      type=str,   default="none")
+    parser.add_argument("--wind_mag",       type=float, default=0.0)
+    parser.add_argument("--send_delay",     type=float, default=0.0)
     return parser
 
 
 if __name__ == "__main__":
     args = _build_parser().parse_args()
     SEND_DELAY_SEC = args.send_delay
-
     producer = _make_producer()
     try:
         stream_to_kafka(
