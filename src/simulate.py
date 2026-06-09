@@ -19,7 +19,9 @@ from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from disturbances import make_wind, PayloadSchedule, Wind
 
 
-# Telemetry schema (kept stable so producers / consumers agree on columns).
+# 텔레메트리 컬럼 스키마 — producer·consumer가 이 목록을 공유
+# ctrl_freq: Spark consumer의 FFT UDF가 실제 샘플링 레이트(fs)로 사용
+# pyb_freq != ctrl_freq일 수 있으므로 반드시 명시
 TELEMETRY_COLUMNS = [
     "step", "t",
     "x", "y", "z",
@@ -32,6 +34,7 @@ TELEMETRY_COLUMNS = [
     "mass_factor", "wind_x", "wind_y", "wind_z",
     "contact", "crashed",
     "p_gain_mult", "seed", "drone_id",
+    "ctrl_freq",                                # FFT fs 계산용 — Spark consumer가 직접 읽어야 함
 ]
 
 
@@ -184,6 +187,7 @@ def run_simulation(
             "wind_x": wind_vec[0], "wind_y": wind_vec[1], "wind_z": wind_vec[2],
             "contact": contact, "crashed": int(crashed),
             "p_gain_mult": p_gain_mult, "seed": seed, "drone_id": drone_id_tag,
+            "ctrl_freq": ctrl_freq,
         })
 
         # ------------------------------
