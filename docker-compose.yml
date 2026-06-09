@@ -1,0 +1,70 @@
+# Kafka + ZooKeeper 로컬 개발 스택
+
+# ZooKeeper를 유지한 이유:
+#   KRaft가 현재 프로덕션 표준이지만, BOAZ 커리큘럼 학습 목적에서는
+#   ZooKeeper 구조(브로커가 ZK에 메타데이터 등록)를 눈으로 확인하는 게
+#   개념 정착에 유리함. 컨테이너 한 개 더 뜨는 비용만 있음.
+
+# advertised.listeners 이중 설정:
+#   INSIDE://kafka:29092  → 컨테이너끼리 통신용 (Stage 3 컨테이너화 대비)
+#   OUTSIDE://localhost:9092 → 호스트 프로세스용 (producer.py, spark-submit)
+#   producer.py와 로컬 spark-submit은 모두 호스트 프로세스이므로 OUTSIDE 사용
+
+# 실행: docker compose up -d
+# 종료: docker compose down
+
+version: "3.8"
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: drone-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: drone-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      # OUTSIDE 리스너: 호스트 프로세스(producer.py, spark-submit)가 접속
+      - "9092:9092"
+      # INSIDE 리스너: 컨테이너끼리 통신 (Stage 3 대비)
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+
+      # 이중 리스너 설정 — 핵심: 호스트 프로세스가 localhost:9092로 붙어야 함
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
+      KAFKA_LISTENERS: INSIDE://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:29092,OUTSIDE://localhost:9092
+      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # 메시지 보존: 개발 중에는 1시간으로 짧게
+      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "kafka-topics",
+          "--bootstrap-server",
+          "localhost:9092",
+          "--list",
+        ]
+      interval: 15s
+      timeout: 10s
+      retries: 10
