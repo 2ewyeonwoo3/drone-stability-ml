@@ -44,7 +44,7 @@ from stability_metrics import (
 # ── 상수 ──────────────────────────────────────────────────────────────────────
 WARMUP_SEC        = 1.5
 CONSECUTIVE_FIRES = 3       # 연속 발화 횟수 (0.5s × 3 = 1.5초 연속이어야 t_fail 확정)
-H                 = 2.0     # 조기경보 horizon [s]
+H                 = 3.5     # 조기경보 horizon [s]
 WINDOW_SEC        = 2.0     # 슬라이딩 윈도우 길이 [s]
 SLIDE_SEC         = 0.5     # 슬라이딩 간격 [s]
 FS_DEFAULT        = 240.0   # 기본 샘플링 레이트 [Hz]
