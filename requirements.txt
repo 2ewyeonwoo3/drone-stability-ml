@@ -6,7 +6,11 @@ Farama-Notifications==0.0.4
 filelock==3.29.0
 fonttools==4.62.1
 fsspec==2026.3.0
+
+# pybullet은 macOS에서 pip 빌드 실패 가능성이 있어 conda-forge로 설치 권장
+# conda install -c conda-forge pybullet
 -e ./gym-pybullet-drones
+
 gymnasium==1.2.3
 Jinja2==3.1.6
 joblib==1.5.3
@@ -36,3 +40,5 @@ tzdata==2026.1
 # Stage 1 — Kafka + Spark 스트리밍 파이프라인
 kafka-python==2.0.2
 pyspark==3.5.1
+
+python-dotenv==1.0.1
