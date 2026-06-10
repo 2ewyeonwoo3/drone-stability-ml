@@ -224,7 +224,7 @@ data/raw/pilot/
 
 # 모델 산출물
 results/models/
-results/plots/
+results/models/model_eval.png
 
 # 라벨 데이터셋 (재현 가능)
 data/processed/labels.parquet
