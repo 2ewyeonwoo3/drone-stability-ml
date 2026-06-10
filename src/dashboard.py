@@ -94,7 +94,7 @@ def run_demo():
     Streamlit 없이 터미널에서 빠르게 동작 확인.
     """
     import glob
-    csv_files = sorted(glob.glob("data/raw/main/payload_f2.5_s2.0_r4.0_S1_seed42.csv"))
+    csv_files = sorted(glob.glob("data/raw/main/payload_f2.5_s6.0_r7.0_S1_seed42.csv"))
     if not csv_files:
         csv_files = sorted(glob.glob("data/raw/main/*.csv"))[:1]
     if not csv_files:
@@ -104,7 +104,7 @@ def run_demo():
     model, scaler, feat_cols = load_model()
     df = pd.read_csv(csv_files[0])
     print(f"재생: {csv_files[0]} ({len(df)}행)")
-    print(f"{'시각':>6} | {'z':>6} | {'R1':>6} | {'R3':>6} | {'위험확률':>8} | 경보")
+    print(f"{'시각':>6} | {'R1':>6} | {'R3':>6} | {'R4':>6} | {'위험확률':>8} | 경보")
     print("-" * 55)
 
     fs  = 240.0
@@ -125,7 +125,7 @@ def run_demo():
             alerts.append(t_end)
 
         print(f"{t_end:6.2f}s | {feats['alt_rmse_val']:6.3f} | "
-              f"{feats['alt_rmse_val']:6.3f} | {feats['ang_rate_rms_val']:6.3f} | "
+              f"{feats['ang_rate_rms_val']:6.3f} | {feats['vib_ratio_val']:6.3f} | "
               f"{prob:8.3f} | {alert}")
 
     if alerts:
@@ -154,7 +154,7 @@ def run_ui():
     )
 
     st.title("🚁 드론 불안정 조기경보 대시보드")
-    st.caption("RF 모델 기반 실시간 예측 | H=3.5s | PR-AUC=0.997")
+    st.caption("고도 이상 기반 단기 조기경보 | H=3.5s | RF PR-AUC=0.997")
 
     # ── 사이드바 설정 ───────────────────────────────────────────────────────
     with st.sidebar:
@@ -172,14 +172,19 @@ def run_ui():
             import glob
             csvs = sorted(glob.glob("data/raw/main/*.csv"))
             if csvs:
-                run_file = st.selectbox("재생할 run", [Path(c).stem for c in csvs])
+                default_run = "payload_f2.5_s6.0_r7.0_S1_seed42"
+                default_idx = next((i for i, c in enumerate(csvs) 
+                                    if Path(c).stem == default_run), 0)
+                run_file = st.selectbox("재생할 run", [Path(c).stem for c in csvs],
+                                        index=default_idx)
 
         st.divider()
         st.markdown("### 모델 정보")
         st.markdown(f"- Horizon H = **{H}s**")
         st.markdown(f"- PR-AUC = **0.997**")
         st.markdown(f"- Lead time = **2.93s** (평균)")
-        st.markdown("- Features: R1~R6 (R1+R3 주요)")
+        st.markdown("- Features: R1 지배적 (LOO drop=0.154)")
+        st.markdown("- 자세 신호(R2~R4)는 보조")
 
     # ── 메인 레이아웃 ────────────────────────────────────────────────────────
     col1, col2, col3 = st.columns(3)
