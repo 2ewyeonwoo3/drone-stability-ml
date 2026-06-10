@@ -20,19 +20,19 @@ hadoop-aws 버전 핀:
 실행:
   # 로컬 (기본값)
   spark-submit \\
-    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,\\
+    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:4.1.2,\\
                org.apache.hadoop:hadoop-aws:3.3.4 \\
     src/spark_consumer.py
 
   # B 전환 (S3 싱크)
   ENV_FILE=.env.s3 spark-submit \\
-    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,\\
+    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:4.1.2,\\
                org.apache.hadoop:hadoop-aws:3.3.4 \\
     src/spark_consumer.py
 
   # B+C 전환 (S3 + EC2 Kafka)
   ENV_FILE=.env.aws spark-submit \\
-    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,\\
+    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:4.1.2,\\
                org.apache.hadoop:hadoop-aws:3.3.4 \\
     src/spark_consumer.py
 """
