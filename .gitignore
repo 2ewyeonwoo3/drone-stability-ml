@@ -217,3 +217,17 @@ gym-pybullet-drones/
 data/streaming/
 
 # python-dotenv (선택 의존성)
+
+# 본 생성 데이터 (재현 가능, 커밋 불필요)
+data/raw/main/
+data/raw/pilot/
+
+# 모델 산출물
+results/models/
+results/plots/
+
+# 라벨 데이터셋 (재현 가능)
+data/processed/labels.parquet
+data/processed/labels_full.parquet
+data/processed/main_label_dist.csv
+data/processed/pilot_label_dist.csv
