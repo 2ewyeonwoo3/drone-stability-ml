@@ -121,7 +121,9 @@ def run_simulation(
     # PID 제어기의 위치 P 게인 배수 조정
     # (기존 코드의 "기체 강성(stiffness)" 조절 노브 역할)
     # gain_ramp > 0 이면 루프 안에서 동적으로 갱신 (Stage 2-A (다) gain run군)
-    _p_coeff_base = ctrl.P_COEFF_FOR.copy()   # gain ramp 기준점
+    # P·I 동시 하강: P만 낮추면 I 게인이 보완해서 발산이 안 일어남
+    _p_coeff_for_base  = ctrl.P_COEFF_FOR.copy()   # 위치 P 게인 기준점
+    _i_coeff_for_base  = ctrl.I_COEFF_FOR.copy()   # 위치 I 게인 기준점
     ctrl.P_COEFF_FOR = ctrl.P_COEFF_FOR * p_gain_mult
 
     client = env.CLIENT
@@ -170,7 +172,9 @@ def run_simulation(
             elapsed = t - gain_start_t
             frac = min(1.0, elapsed / gain_ramp)
             current_mult = p_gain_mult + (gain_end - p_gain_mult) * frac
-            ctrl.P_COEFF_FOR = _p_coeff_base * current_mult
+            # P·I 동시 하강: I 게인도 같이 낮춰야 적분 보상을 억제할 수 있음
+            ctrl.P_COEFF_FOR = _p_coeff_for_base * current_mult
+            ctrl.I_COEFF_FOR = _i_coeff_for_base * current_mult
 
         # ------------------------------
         # Payload 주입

@@ -157,34 +157,43 @@ class TurbulentWind(Wind):
 
 @dataclass
 class RampedTurbulentWind(Wind):
-    """시간에 따라 mag를 선형으로 키우는 OU 난류. Stage 2-A 조기경보 데이터 생성 전용.
+    """방향 고정 + magnitude 선형 ramp 바람. Stage 2-A wind run군 전용.
 
-    외란을 '즉사'가 아닌 '점진 발산'으로 만들기 위해 mag를 ramp로 증가시킨다.
-    TurbulentWind와 달리 평균 방향 없는 전방향 난류(mean=0)를 사용한다.
+    기존 3D OU 방식은 seed마다 전복 방향이 달라 급발산했음.
+    → 방향을 고정하고 magnitude만 ramp로 키워 일관된 점진 발산 유도.
+    seed 다양성은 magnitude에 ±noise_std 비율의 1D OU 노이즈로만 부여.
 
-    peak_mag : ramp 종료 시점의 최대 힘 크기 [N]
-    start    : ramp 시작 시각 [s]
-    ramp     : ramp 지속 시간 [s]. start+ramp 이후엔 peak_mag로 고정
-    theta    : OU 평균 회귀율 [1/s]
-    dt       : 제어 주기 [s] (시뮬레이터와 반드시 일치)
-    seed     : 재현성 시드 — 같은 seed = 같은 노이즈 궤적
+    peak_mag  : ramp 종료 시점의 최대 힘 [N]
+    start     : ramp 시작 시각 [s]
+    ramp      : ramp 지속 시간 [s]
+    direction : 주 방향 벡터 (내부에서 단위벡터로 정규화). 기본 +x
+    noise_std : magnitude 노이즈 비율 (기본 0.1 = ±10%). seed 다양성용.
+    theta     : 노이즈 OU 회귀율 [1/s]
+    dt        : 제어 주기 [s]
+    seed      : 재현성 시드
     """
-    peak_mag: float = 0.0
-    start: float = 0.0
-    ramp: float = 5.0
-    theta: float = 2.0
-    dt: float = 1.0 / 240.0
-    seed: int = 0
+    peak_mag:  float = 0.0
+    start:     float = 0.0
+    ramp:      float = 5.0
+    direction: tuple = (1.0, 0.0, 0.0)
+    noise_std: float = 0.1
+    theta:     float = 2.0
+    dt:        float = 1.0 / 240.0
+    seed:      int   = 0
 
-    _state: np.ndarray = field(init=False, default=None)
-    _rng: np.random.Generator = field(init=False, default=None)
+    _unit:  np.ndarray           = field(init=False, default=None)
+    _noise: float                = field(init=False, default=0.0)
+    _rng:   np.random.Generator  = field(init=False, default=None)
 
     def __post_init__(self):
-        self._state = np.zeros(3)
-        self._rng = np.random.default_rng(self.seed)
+        d = np.asarray(self.direction, dtype=float)
+        n = np.linalg.norm(d)
+        self._unit  = d / n if n > 0 else np.array([1.0, 0.0, 0.0])
+        self._noise = 0.0
+        self._rng   = np.random.default_rng(self.seed)
 
     def _current_mag(self, t: float) -> float:
-        """현재 시각 t에서의 목표 mag 계산 (선형 ramp)."""
+        """현재 시각 t에서의 목표 magnitude (선형 ramp)."""
         if t < self.start:
             return 0.0
         elapsed = t - self.start
@@ -197,17 +206,14 @@ class RampedTurbulentWind(Wind):
             return np.zeros(3)
         mag = self._current_mag(t)
         if mag <= 0:
-            # ramp 시작 직후 상태 초기화 — 갑작스러운 튀임 방지
-            self._state = np.zeros(3)
             return np.zeros(3)
-        # OU 프로세스: 평균 방향 없음(전방향 난류), sigma = 현재 mag
-        noise = self._rng.standard_normal(3)
-        self._state = (
-            self._state
-            + self.theta * (np.zeros(3) - self._state) * self.dt
-            + mag * np.sqrt(self.dt) * noise
+        # 방향 고정 + 1D OU 노이즈로 seed 다양성 부여 (급발산 방지)
+        self._noise = (
+            self._noise
+            + self.theta * (0.0 - self._noise) * self.dt
+            + self.noise_std * np.sqrt(self.dt) * self._rng.standard_normal()
         )
-        return self._state.copy()
+        return mag * (1.0 + self._noise) * self._unit
 
 # ─────────────────────────────────────────────────────────────────────────────
 
