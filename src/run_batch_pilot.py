@@ -43,8 +43,7 @@ def _run_one(row: dict) -> dict:
             target_pos=(0.0, 0.0, 1.0),
             output_path=output,
             disturbance_type=row["disturbance_type"],
-            # 초기조건 섭동 (seed마다 다른 궤적 보장)
-            init_rpy_std=0.01,
+            init_rpy_std=0.0,    # 0.01 → 0.0 으로 변경
         )
 
         dtype = row["disturbance_type"]
