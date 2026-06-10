@@ -46,7 +46,7 @@ services:
       # 이중 리스너 설정 — 핵심: 호스트 프로세스가 localhost:9092로 붙어야 함
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:PLAINTEXT
       KAFKA_LISTENERS: INSIDE://0.0.0.0:29092,OUTSIDE://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:29092,OUTSIDE://localhost:9092
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:29092,OUTSIDE://3.39.170.157:9092
       KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
 
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -56,13 +56,7 @@ services:
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
     healthcheck:
       test:
-        [
-          "CMD",
-          "kafka-topics",
-          "--bootstrap-server",
-          "localhost:9092",
-          "--list",
-        ]
+        ["CMD", "kafka-topics", "--bootstrap-server", "kafka:29092", "--list"]
       interval: 15s
       timeout: 10s
       retries: 10
