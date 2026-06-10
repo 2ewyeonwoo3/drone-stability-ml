@@ -231,3 +231,6 @@ data/processed/labels.parquet
 data/processed/labels_full.parquet
 data/processed/main_label_dist.csv
 data/processed/pilot_label_dist.csv
+
+# Spark 서빙 출력 (재현 가능)
+data/serving/

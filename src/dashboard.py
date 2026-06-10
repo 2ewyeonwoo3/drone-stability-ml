@@ -177,6 +177,45 @@ def run_ui():
                                     if Path(c).stem == default_run), 0)
                 run_file = st.selectbox("재생할 run", [Path(c).stem for c in csvs],
                                         index=default_idx)
+        elif data_source == "Kafka 실시간 (live)":
+            # data/serving/*.parquet를 polling해서 실시간 업데이트
+            import glob, time as _time
+            
+            st.info("Spark 서빙 스크립트가 실행 중이어야 합니다.\n"
+                    "`spark-submit --packages ... src/spark_consumer_serving.py`")
+            
+            serving_dir = "data/serving"
+            chart_area2 = st.empty()
+            log_area2   = st.empty()
+            
+            history = {"window_end": [], "risk_prob": [], "is_alert": []}
+            placeholder = st.empty()
+            
+            while True:
+                parquets = sorted(glob.glob(f"{serving_dir}/**/*.parquet", recursive=True))
+                if parquets:
+                    df_live = pd.concat([pd.read_parquet(p) for p in parquets[-10:]])
+                    df_live = df_live.sort_values("window_end").tail(50)
+                    
+                    fig = go.Figure()
+                    colors = ["crimson" if a else "steelblue" 
+                            for a in df_live["is_alert"]]
+                    fig.add_bar(x=df_live["window_end"], y=df_live["risk_prob"],
+                            marker_color=colors)
+                    fig.add_hline(y=alert_threshold, line_dash="dot", 
+                                line_color="orange")
+                    fig.update_layout(title="실시간 위험 확률",
+                                    height=400)
+                    chart_area2.plotly_chart(fig, use_container_width=True)
+                    
+                    alerts = df_live[df_live["is_alert"]==1]
+                    if len(alerts) > 0:
+                        log_area2.error(
+                            f"🚨 경보 {len(alerts)}건 | "
+                            f"최근: {alerts['window_end'].iloc[-1]}"
+                        )
+                
+                _time.sleep(2)  # 2초마다 polling
 
         st.divider()
         st.markdown("### 모델 정보")
