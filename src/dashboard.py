@@ -381,8 +381,10 @@ def _render_kafka(st, alert_threshold, make_subplots, go):
         st.rerun()
         return
 
-    # 최근 윈도우만 사용 (60초 이내)
-    # window_end가 문자열이면 그대로, 최신 N개 기준
+    df_live["window_end"] = pd.to_datetime(df_live["window_end"], errors="coerce")
+    df_live = df_live.dropna(subset=["window_end"])
+    df_live = df_live.sort_values("window_end")
+    df_live = df_live.drop_duplicates(subset=["window_end"], keep="last")
     df_recent = df_live.tail(30)
 
     # 상태 카드
