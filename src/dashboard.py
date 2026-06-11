@@ -2,15 +2,10 @@
 dashboard.py — Stage 3 실시간 조기경보 대시보드.
 
 실행:
-  streamlit run src/dashboard.py -- --mode ui
+  streamlit run src/dashboard.py --server.port 8501 --server.address 0.0.0.0 -- --mode ui
 
-배포:
-  Streamlit Cloud: GitHub 연결 → Main file: src/dashboard.py
-  로컬: streamlit run src/dashboard.py -- --mode ui
-
-모드:
-  CSV 재생: data/raw/main/*.csv 중 선택 → 슬라이딩 윈도우 재생
-  Kafka 라이브: data/serving/ Parquet polling (spark_consumer_serving.py 필요)
+배포 (EC2):
+  nohup streamlit run src/dashboard.py --server.port 8501 --server.address 0.0.0.0 -- --mode ui &
 """
 
 from __future__ import annotations
@@ -33,14 +28,14 @@ FEATURE_COLS = [
     "alt_rmse_val", "tilt_max_val", "ang_rate_rms_val",
     "vib_ratio_val", "crash_val", "conv_fail_val",
 ]
-WINDOW_SEC   = 2.0
-SLIDE_SEC    = 0.5
+WINDOW_SEC  = 2.0
+SLIDE_SEC   = 0.5
 ALERT_THRESH = 0.6
 H            = 3.5
 SERVING_DIR  = "data/serving"
+REFRESH_SEC  = 3   # Kafka 라이브 자동 새로고침 간격
 
 
-# ── 공통 유틸 ─────────────────────────────────────────────────────────────────
 def load_model():
     artifact = joblib.load(MODEL_PATH)
     return artifact["model"], artifact["scaler"], artifact["feature_cols"]
@@ -80,16 +75,11 @@ def run_demo():
     if not files:
         print("data/raw/main/*.csv 없음.")
         return
-
     model, scaler, feat_cols = load_model()
     df  = pd.read_csv(files[0])
     win = int(WINDOW_SEC * 240)
     sld = int(SLIDE_SEC  * 240)
-
     print(f"재생: {files[0]}")
-    print(f"{'t':>6} | {'R1':>6} | {'R3':>6} | {'prob':>6} | 경보")
-    print("-" * 40)
-
     alerts = []
     for end in range(win, len(df) + 1, sld):
         df_win = df.iloc[end - win:end]
@@ -100,9 +90,7 @@ def run_demo():
         flag   = "🚨" if prob >= ALERT_THRESH else ""
         if prob >= ALERT_THRESH:
             alerts.append(t_end)
-        print(f"{t_end:6.2f}s | {feats['alt_rmse_val']:6.3f} | "
-              f"{feats['ang_rate_rms_val']:6.3f} | {prob:6.3f} | {flag}")
-
+        print(f"{t_end:6.2f}s | R1={feats['alt_rmse_val']:.3f} | prob={prob:.3f} {flag}")
     if alerts and "crashed" in df.columns and df["crashed"].any():
         t_crash = float(df[df["crashed"] == 1]["t"].min())
         print(f"\n첫 경보: {min(alerts):.2f}s  추락: {t_crash:.2f}s  "
@@ -121,20 +109,13 @@ def run_ui():
         layout="wide",
     )
 
-    # ── session_state 초기화 ──────────────────────────────────────────────────
-    defaults = {
-        "playing":       False,   # CSV 재생 중 여부
-        "frame":         0,       # 현재 윈도우 인덱스
-        "history":       [],      # {"t","z","prob","alert"} 리스트
-        "first_alert_t": None,
-        "t_crash":       None,
-        "run_file":      None,
-        "df":            None,
-        "model":         None,
-        "scaler":        None,
-        "feat_cols":     None,
-    }
-    for k, v in defaults.items():
+    # session_state 초기화
+    for k, v in {
+        "playing": False, "frame": 0, "history": [],
+        "first_alert_t": None, "t_crash": None,
+        "run_file": None, "df": None,
+        "model": None, "scaler": None, "feat_cols": None,
+    }.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
@@ -153,18 +134,22 @@ def run_ui():
 
         if data_source == "CSV 재생 (demo)":
             csvs = sorted(glob.glob("data/raw/main/*.csv"))
-            if csvs:
+            if not csvs:
+                st.warning("data/raw/main/ 에 CSV 파일이 없습니다.")
+            else:
+                # run이 여러 개면 selectbox, 하나면 그냥 표시
+                stems = [Path(c).stem for c in csvs]
                 default_run = "payload_f2.5_s6.0_r7.0_S1_seed42"
                 default_idx = next(
-                    (i for i, c in enumerate(csvs)
-                     if Path(c).stem == default_run), 0)
-                selected = st.selectbox(
-                    "재생할 run",
-                    [Path(c).stem for c in csvs],
-                    index=default_idx,
-                )
+                    (i for i, s in enumerate(stems) if s == default_run), 0)
 
-                # run이 바뀌면 상태 초기화
+                if len(stems) == 1:
+                    selected = stems[0]
+                    st.markdown(f"**선택된 run:**\n`{selected}`")
+                else:
+                    selected = st.selectbox("재생할 run", stems, index=default_idx)
+
+                # run 변경 시 초기화
                 if selected != st.session_state.run_file:
                     st.session_state.run_file      = selected
                     st.session_state.playing       = False
@@ -174,69 +159,72 @@ def run_ui():
                     st.session_state.t_crash       = None
                     st.session_state.df            = None
 
-                col_btn1, col_btn2 = st.columns(2)
-                with col_btn1:
-                    if st.button("▶ 재생", use_container_width=True,
-                                 disabled=st.session_state.playing):
-                        # 모델 로드 (처음 한 번)
-                        if st.session_state.model is None:
-                            m, s, f = load_model()
-                            st.session_state.model     = m
-                            st.session_state.scaler    = s
-                            st.session_state.feat_cols = f
-                        # 데이터 로드
-                        df = pd.read_csv(f"data/raw/main/{selected}.csv")
-                        st.session_state.df      = df
-                        st.session_state.frame   = 0
-                        st.session_state.history = []
-                        st.session_state.first_alert_t = None
-                        if "crashed" in df.columns and df["crashed"].any():
-                            st.session_state.t_crash = float(
-                                df[df["crashed"] == 1]["t"].min())
-                        st.session_state.playing = True
-                        st.rerun()
+                col1, col2 = st.columns(2)
+                with col1:
+                    play_btn = st.button(
+                        "▶ 재생",
+                        use_container_width=True,
+                        disabled=st.session_state.playing,
+                    )
+                with col2:
+                    stop_btn = st.button(
+                        "⏹ 정지",
+                        use_container_width=True,
+                        disabled=not st.session_state.playing,
+                    )
 
-                with col_btn2:
-                    if st.button("⏹ 정지", use_container_width=True,
-                                 disabled=not st.session_state.playing):
-                        st.session_state.playing = False
-                        st.rerun()
+                if play_btn:
+                    if st.session_state.model is None:
+                        m, s, f = load_model()
+                        st.session_state.model     = m
+                        st.session_state.scaler    = s
+                        st.session_state.feat_cols = f
+                    df = pd.read_csv(f"data/raw/main/{selected}.csv")
+                    st.session_state.df      = df
+                    st.session_state.frame   = 0
+                    st.session_state.history = []
+                    st.session_state.first_alert_t = None
+                    if "crashed" in df.columns and df["crashed"].any():
+                        st.session_state.t_crash = float(
+                            df[df["crashed"] == 1]["t"].min())
+                    st.session_state.playing = True
+                    st.rerun()
+
+                if stop_btn:
+                    st.session_state.playing = False
+                    st.rerun()
 
         st.divider()
         st.markdown("### 모델 정보")
         st.markdown(f"- Horizon H = **{H}s**")
-        st.markdown(f"- PR-AUC = **0.997**")
+        st.markdown(f"- RF PR-AUC = **0.997**")
         st.markdown(f"- Lead time = **2.93s** (평균)")
         st.markdown("- R1(고도 오차) 지배적")
         st.markdown("- 자세 신호(R2~R4)는 보조")
 
-    # ── 메인 헤더 ─────────────────────────────────────────────────────────────
+    # ── 헤더 ──────────────────────────────────────────────────────────────────
     st.title("🚁 드론 불안정 조기경보 대시보드")
     st.caption("고도 이상 기반 단기 조기경보 | H=3.5s | RF PR-AUC=0.997")
 
     # ── Kafka 라이브 모드 ─────────────────────────────────────────────────────
     if data_source == "Kafka 실시간 (live)":
-        _render_kafka_live(st, alert_threshold)
+        _render_kafka(st, alert_threshold, make_subplots, go)
         return
 
     # ── CSV 재생 모드 ─────────────────────────────────────────────────────────
     if st.session_state.df is None:
-        st.info("사이드바에서 run을 선택하고 ▶ 재생을 누르세요.")
+        st.info("👈 사이드바에서 **▶ 재생** 버튼을 누르세요.")
         return
 
     _render_csv_frame(st, alert_threshold, make_subplots, go)
 
-    # 재생 중이면 다음 프레임으로
     if st.session_state.playing:
         time.sleep(0.05)
         st.rerun()
 
 
+# ── CSV 재생 프레임 렌더링 ────────────────────────────────────────────────────
 def _render_csv_frame(st, alert_threshold, make_subplots, go):
-    """현재 session_state.frame 기준으로 한 프레임 처리 후 화면 업데이트."""
-    import plotly.graph_objects as go2
-    from plotly.subplots import make_subplots2  # noqa — 아래에서 직접 import
-
     df        = st.session_state.df
     model     = st.session_state.model
     scaler    = st.session_state.scaler
@@ -244,232 +232,224 @@ def _render_csv_frame(st, alert_threshold, make_subplots, go):
     win       = int(WINDOW_SEC * 240)
     sld       = int(SLIDE_SEC  * 240)
 
-    # 아직 처리 안 한 프레임 계산
     end_idx = win + st.session_state.frame * sld
     if end_idx <= len(df):
-        df_win = df.iloc[end_idx - win:end_idx]
-        t_end  = float(df_win["t"].iloc[-1])
-        feats  = compute_features(df_win)
-        X      = scaler.transform([[feats[c] for c in feat_cols]])
-        prob   = float(model.predict_proba(X)[0][1])
+        df_win   = df.iloc[end_idx - win:end_idx]
+        t_end    = float(df_win["t"].iloc[-1])
+        feats    = compute_features(df_win)
+        X        = scaler.transform([[feats[c] for c in feat_cols]])
+        prob     = float(model.predict_proba(X)[0][1])
         is_alert = prob >= alert_threshold
 
         st.session_state.history.append({
             "t": t_end, "z": float(df_win["z"].iloc[-1]),
             "prob": prob, "alert": is_alert, **feats,
         })
-
         if is_alert and st.session_state.first_alert_t is None:
             st.session_state.first_alert_t = t_end
 
         st.session_state.frame += 1
-
-        # 마지막 프레임이면 정지
         if end_idx + sld > len(df):
             st.session_state.playing = False
 
     history = st.session_state.history
     if not history:
-        st.info("재생 중...")
         return
 
-    hist_df = pd.DataFrame(history)
+    hist_df    = pd.DataFrame(history)
+    last       = history[-1]
+    last_alert = last["alert"]
+    last_prob  = last["prob"]
+    t_crash    = st.session_state.t_crash
+    first_t    = st.session_state.first_alert_t
 
-    # ── 상태 카드 3개 ─────────────────────────────────────────────────────────
-    col1, col2, col3 = st.columns(3)
-    last_alert = history[-1]["alert"]
-    last_prob  = history[-1]["prob"]
-
+    # 상태 카드
+    c1, c2, c3 = st.columns(3)
     if last_alert:
-        col1.error("## 🚨 위험 임박")
+        c1.error("## 🚨 위험 임박")
     else:
-        col1.success("## ✅ 정상")
-
-    col2.metric("위험 확률", f"{last_prob:.3f}")
-
-    t_crash = st.session_state.t_crash
-    first_t = st.session_state.first_alert_t
+        c1.success("## ✅ 정상")
+    c2.metric("위험 확률", f"{last_prob:.3f}")
     if first_t and t_crash:
-        col3.metric("Lead Time", f"{t_crash - first_t:.1f}s",
-                    delta=f"경보 {first_t:.1f}s → 추락 {t_crash:.1f}s")
+        c3.metric("Lead Time", f"{t_crash - first_t:.1f}s",
+                  delta=f"{first_t:.1f}s → {t_crash:.1f}s")
     elif first_t:
-        col3.metric("첫 경보", f"{first_t:.2f}s")
+        c3.metric("첫 경보", f"{first_t:.2f}s")
     else:
-        col3.metric("Lead Time", "—")
+        c3.metric("Lead Time", "—")
 
-    # ── 메인 차트 ─────────────────────────────────────────────────────────────
+    # 진행 바
+    total_frames = (len(hist_df["t"]))
+    max_t = float(df["t"].iloc[-1])
+    cur_t = last["t"]
+    st.progress(min(1.0, cur_t / max_t),
+                text=f"재생 중: {cur_t:.1f}s / {max_t:.1f}s")
+
+    # 메인 차트
     fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
+        rows=2, cols=1, shared_xaxes=True,
         subplot_titles=("고도 z [m]", "위험 확률"),
-        row_heights=[0.6, 0.4],
-        vertical_spacing=0.08,
+        row_heights=[0.6, 0.4], vertical_spacing=0.08,
     )
-
     fig.add_trace(go.Scatter(
         x=hist_df["t"], y=hist_df["z"],
         mode="lines", name="고도",
         line=dict(color="steelblue", width=2),
     ), row=1, col=1)
-
     if t_crash:
         fig.add_vline(x=t_crash, line_dash="dash", line_color="red",
                       annotation_text="추락", row=1, col=1)
-
     bar_colors = ["crimson" if a else "#4A90D9" for a in hist_df["alert"]]
     fig.add_trace(go.Bar(
         x=hist_df["t"], y=hist_df["prob"],
         marker_color=bar_colors, opacity=0.8, name="위험확률",
     ), row=2, col=1)
-
-    fig.add_hline(
-        y=alert_threshold, line_dash="dot", line_color="orange",
-        annotation_text=f"임계값 {alert_threshold:.2f}",
-        row=2, col=1,
-    )
-
+    fig.add_hline(y=alert_threshold, line_dash="dot", line_color="orange",
+                  annotation_text=f"임계값 {alert_threshold:.2f}",
+                  row=2, col=1)
     fig.update_layout(
-        height=480,
-        showlegend=False,
-        margin=dict(t=40, b=20),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
+        height=480, showlegend=False, margin=dict(t=40, b=20),
+        plot_bgcolor="white", paper_bgcolor="white",
     )
     fig.update_xaxes(title_text="시각 [s]", row=2, col=1)
     fig.update_yaxes(title_text="z [m]", row=1, col=1)
     fig.update_yaxes(title_text="확률", range=[0, 1.05], row=2, col=1)
-
     st.plotly_chart(fig, use_container_width=True)
 
-    # ── feature 테이블 ────────────────────────────────────────────────────────
+    # feature 테이블
     feat_labels = {
-        "alt_rmse_val":     "R1 고도오차 RMSE",
+        "alt_rmse_val":     "R1 고도오차",
         "tilt_max_val":     "R2 최대자세각",
-        "ang_rate_rms_val": "R3 각속도 RMS",
+        "ang_rate_rms_val": "R3 각속도RMS",
         "vib_ratio_val":    "R4 진동비율",
         "crash_val":        "R5 추락지시",
         "conv_fail_val":    "R6 수렴실패",
     }
-    last = history[-1]
-    feat_df = pd.DataFrame([
-        {"신호": label, "현재값": f"{last[k]:.4f}",
-         "상태": "🔴" if last[k] > 0.1 else "🟢"}
-        for k, label in feat_labels.items()
-    ])
-    with st.expander("📊 현재 윈도우 Feature 값", expanded=False):
-        st.dataframe(feat_df, use_container_width=True, hide_index=True)
+    with st.expander("📊 현재 Feature 값", expanded=False):
+        st.dataframe(pd.DataFrame([
+            {"신호": lbl, "값": f"{last[k]:.4f}",
+             "상태": "🔴" if last[k] > 0.1 else "🟢"}
+            for k, lbl in feat_labels.items()
+        ]), use_container_width=True, hide_index=True)
 
-    # ── 경보 로그 ─────────────────────────────────────────────────────────────
-    alert_rows = [h for h in history if h["alert"]]
-    if alert_rows:
-        with st.expander(f"⚠️ 경보 기록 ({len(alert_rows)}건)", expanded=True):
-            for h in alert_rows[-5:]:
-                st.markdown(
-                    f"- `t={h['t']:.2f}s` — 위험확률 **{h['prob']:.3f}**")
+    # 경보 로그
+    alerts = [h for h in history if h["alert"]]
+    if alerts:
+        with st.expander(f"⚠️ 경보 기록 ({len(alerts)}건)", expanded=True):
+            for h in alerts[-5:]:
+                st.markdown(f"- `t={h['t']:.2f}s` — 위험확률 **{h['prob']:.3f}**")
 
-    # ── 재생 완료 배너 ────────────────────────────────────────────────────────
-    if not st.session_state.playing and len(history) > 0:
+    # 재생 완료
+    if not st.session_state.playing:
         if first_t and t_crash:
             st.success(
-                f"✅ 재생 완료 | 첫 경보 {first_t:.2f}s → "
-                f"추락 {t_crash:.2f}s | **Lead time = {t_crash - first_t:.2f}초**")
+                f"✅ 재생 완료 | 첫 경보 **{first_t:.2f}s** → "
+                f"추락 **{t_crash:.2f}s** | Lead time = **{t_crash - first_t:.2f}초**")
         elif not first_t:
             st.info("✅ 재생 완료 — 경보 없음 (안정 run)")
 
 
-def _render_kafka_live(st, alert_threshold):
-    """Kafka 라이브 모드: data/serving/ Parquet polling."""
-    import plotly.graph_objects as go
-
-    st.info(
-        "**Spark 서빙이 실행 중이어야 합니다.**\n\n"
-        "```bash\nspark-submit \\\n"
-        "  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \\\n"
-        "  src/spark_consumer_serving.py\n```"
-    )
-
+# ── Kafka 라이브 모드 ─────────────────────────────────────────────────────────
+def _render_kafka(st, alert_threshold, make_subplots, go):
     parquets = sorted(
         glob.glob(f"{SERVING_DIR}/**/*.parquet", recursive=True))
 
+    # serving 데이터 없을 때만 안내 표시
     if not parquets:
-        st.warning("⏳ 아직 서빙 데이터 없음. Spark 서빙 시작 후 새로고침하세요.")
-        if st.button("🔄 새로고침"):
-            st.rerun()
+        st.warning(
+            "⏳ 서빙 데이터가 없습니다. Spark 서빙을 시작하고 데이터를 전송하세요.\n\n"
+            "```bash\n"
+            "spark-submit \\\n"
+            "  --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \\\n"
+            "  src/spark_consumer_serving.py\n"
+            "```"
+        )
+        time.sleep(REFRESH_SEC)
+        st.rerun()
         return
 
+    # 데이터 로드
     try:
         df_live = pd.concat([pd.read_parquet(p) for p in parquets[-20:]])
-        df_live = df_live.sort_values("window_end").drop_duplicates(
-            "window_end").tail(60)
+        df_live = (df_live
+                   .sort_values("window_end")
+                   .drop_duplicates("window_end")
+                   .tail(60))
     except Exception as e:
         st.error(f"데이터 읽기 오류: {e}")
+        time.sleep(REFRESH_SEC)
+        st.rerun()
         return
 
+    # 최근 윈도우만 사용 (60초 이내)
+    # window_end가 문자열이면 그대로, 최신 N개 기준
+    df_recent = df_live.tail(30)
+
     # 상태 카드
-    n_alert = int((df_live["is_alert"] == 1).sum())
-    col1, col2, col3 = st.columns(3)
-    if n_alert > 0:
-        col1.error("## 🚨 위험 임박")
-        latest = df_live[df_live["is_alert"] == 1]["window_end"].iloc[-1]
-        col3.metric("최근 경보", str(latest)[-12:])
+    n_alert = int((df_recent["is_alert"] == 1).sum())
+    n_total = len(df_recent)
+    last_prob = float(df_recent["risk_prob"].iloc[-1])
+    last_alert = bool(df_recent["is_alert"].iloc[-1])
+
+    c1, c2, c3 = st.columns(3)
+    if last_alert:
+        c1.error("## 🚨 위험 임박")
     else:
-        col1.success("## ✅ 정상")
-        col3.metric("경보", "없음")
-    col2.metric("총 경보 건수", f"{n_alert}건")
+        c1.success("## ✅ 정상")
+    c2.metric("현재 위험 확률", f"{last_prob:.3f}")
+    c3.metric("경보 비율", f"{n_alert}/{n_total}",
+              delta=f"최근 {n_total}개 윈도우")
 
     # 차트
     bar_colors = ["crimson" if a else "#4A90D9"
-                  for a in df_live["is_alert"]]
+                  for a in df_recent["is_alert"]]
     fig = go.Figure()
     fig.add_bar(
-        x=df_live["window_end"],
-        y=df_live["risk_prob"],
+        x=df_recent["window_end"],
+        y=df_recent["risk_prob"],
         marker_color=bar_colors,
         opacity=0.85,
-        name="위험확률",
     )
-    fig.add_hline(
-        y=alert_threshold, line_dash="dot", line_color="orange",
-        annotation_text=f"임계값 {alert_threshold:.2f}",
-    )
+    fig.add_hline(y=alert_threshold, line_dash="dot",
+                  line_color="orange",
+                  annotation_text=f"임계값 {alert_threshold:.2f}")
     fig.update_layout(
         title="실시간 위험 확률 (Kafka 스트림)",
-        xaxis_title="시각",
-        yaxis_title="위험 확률",
-        yaxis_range=[0, 1.05],
-        height=420,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
+        xaxis_title="시각", yaxis_title="위험 확률",
+        yaxis_range=[0, 1.05], height=420,
+        plot_bgcolor="white", paper_bgcolor="white",
         margin=dict(t=50),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # 최근 윈도우 테이블
+    # 최근 경보 로그
+    alert_rows = df_recent[df_recent["is_alert"] == 1]
+    if len(alert_rows) > 0:
+        with st.expander(f"⚠️ 경보 기록 ({len(alert_rows)}건)", expanded=True):
+            for _, row in alert_rows.tail(5).iterrows():
+                st.markdown(
+                    f"- `{row['window_end']}` — "
+                    f"위험확률 **{row['risk_prob']:.3f}** | "
+                    f"R1={row.get('alt_rmse_val', 0):.3f}")
+
+    # 상세 테이블
     with st.expander("📋 최근 윈도우 상세", expanded=False):
-        show_cols = ["window_end", "alt_rmse_val", "ang_rate_rms_val",
-                     "risk_prob", "is_alert"]
-        show_cols = [c for c in show_cols if c in df_live.columns]
-        st.dataframe(
-            df_live[show_cols].tail(10).reset_index(drop=True),
-            use_container_width=True)
+        show = [c for c in ["window_end", "alt_rmse_val",
+                             "ang_rate_rms_val", "risk_prob", "is_alert"]
+                if c in df_recent.columns]
+        st.dataframe(df_recent[show].tail(10).reset_index(drop=True),
+                     use_container_width=True)
 
-    # 자동 새로고침
-    col_r1, col_r2 = st.columns([3, 1])
-    col_r1.caption(f"마지막 업데이트: {df_live['window_end'].iloc[-1]}")
-    if col_r2.button("🔄 새로고침"):
-        st.rerun()
-
-    # 5초마다 자동 rerun
-    time.sleep(3)
+    # 자동 새로고침 (버튼 없이)
+    st.caption(f"🔄 {REFRESH_SEC}초마다 자동 업데이트 | "
+               f"마지막: {df_recent['window_end'].iloc[-1]}")
+    time.sleep(REFRESH_SEC)
     st.rerun()
 
 
 # ── Spark 스텁 ────────────────────────────────────────────────────────────────
 def run_spark():
-    print("spark_consumer_serving.py를 직접 실행하세요:")
-    print("  spark-submit \\")
-    print("    --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 \\")
-    print("    src/spark_consumer_serving.py")
+    print("spark_consumer_serving.py를 직접 실행하세요.")
 
 
 def main():
@@ -477,12 +457,7 @@ def main():
     parser.add_argument("--mode", choices=["demo", "ui", "spark"],
                         default="ui")
     args = parser.parse_args()
-    if args.mode == "demo":
-        run_demo()
-    elif args.mode == "ui":
-        run_ui()
-    elif args.mode == "spark":
-        run_spark()
+    {"demo": run_demo, "ui": run_ui, "spark": run_spark}[args.mode]()
 
 
 if __name__ == "__main__":
