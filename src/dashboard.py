@@ -37,7 +37,7 @@ WINDOW_SEC   = 2.0
 SLIDE_SEC    = 0.5
 ALERT_THRESH = 0.6
 H            = 3.5
-REFRESH_SEC  = 3   # Kafka 라이브 자동 새로고침 간격
+REFRESH_SEC  = 6   # Kafka 라이브 자동 새로고침 간격
 
 
 def load_model():
