@@ -423,6 +423,7 @@ def _render_kafka(st, alert_threshold, make_subplots, go):
 
     df_live["window_end"] = pd.to_datetime(
         df_live["window_end"],
+        format="mixed",
         errors="coerce",
     )
     df_live = df_live.dropna(subset=["window_end"])
