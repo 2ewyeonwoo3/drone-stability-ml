@@ -440,11 +440,19 @@ def _render_kafka(st, alert_threshold, make_subplots, go):
         st.rerun()
         return
 
+    # 대시보드 슬라이더 기준으로 경보 여부를 재계산한다.
+    # (Spark가 저장한 is_alert는 ALERT_THRESH=0.6 고정값 기준이므로
+    #  사이드바 슬라이더와 별도 기준이 되어 화면이 일치하지 않는 문제를 방지)
+    df_recent = df_recent.copy()
+    df_recent["display_alert"] = (
+        df_recent["risk_prob"] >= alert_threshold
+    ).astype(int)
+
     # 상태 카드
-    n_alert = int((df_recent["is_alert"] == 1).sum())
+    n_alert = int(df_recent["display_alert"].sum())
     n_total = len(df_recent)
     last_prob = float(df_recent["risk_prob"].iloc[-1])
-    last_alert = bool(df_recent["is_alert"].iloc[-1])
+    last_alert = bool(df_recent["display_alert"].iloc[-1])
 
     c1, c2, c3 = st.columns(3)
     if last_alert:
@@ -457,7 +465,7 @@ def _render_kafka(st, alert_threshold, make_subplots, go):
 
     # 차트
     bar_colors = ["crimson" if a else "#4A90D9"
-                  for a in df_recent["is_alert"]]
+                  for a in df_recent["display_alert"]]
     fig = go.Figure()
     fig.add_bar(
         x=df_recent["window_end"],
@@ -478,7 +486,7 @@ def _render_kafka(st, alert_threshold, make_subplots, go):
     st.plotly_chart(fig, use_container_width=True)
 
     # 최근 경보 로그
-    alert_rows = df_recent[df_recent["is_alert"] == 1]
+    alert_rows = df_recent[df_recent["display_alert"] == 1]
     if len(alert_rows) > 0:
         with st.expander(f"⚠️ 경보 기록 ({len(alert_rows)}건)", expanded=True):
             for _, row in alert_rows.tail(5).iterrows():
