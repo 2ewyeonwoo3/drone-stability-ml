@@ -23,16 +23,20 @@ import joblib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-MODEL_PATH   = Path("results/models/randomforest.pkl")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+MODEL_PATH = PROJECT_ROOT / "results" / "models" / "randomforest.pkl"
+RAW_DATA_DIR = PROJECT_ROOT / "data" / "raw" / "main"
+SERVING_DIR = PROJECT_ROOT / "data" / "serving" / "output"
+
 FEATURE_COLS = [
     "alt_rmse_val", "tilt_max_val", "ang_rate_rms_val",
     "vib_ratio_val", "crash_val", "conv_fail_val",
 ]
-WINDOW_SEC  = 2.0
-SLIDE_SEC   = 0.5
+WINDOW_SEC   = 2.0
+SLIDE_SEC    = 0.5
 ALERT_THRESH = 0.6
 H            = 3.5
-SERVING_DIR  = "data/serving"
 REFRESH_SEC  = 3   # Kafka 라이브 자동 새로고침 간격
 
 
@@ -69,11 +73,11 @@ def compute_features(df_win: pd.DataFrame, target_z: float = 1.0) -> dict:
 
 # ── demo 모드 (터미널) ────────────────────────────────────────────────────────
 def run_demo():
-    files = glob.glob("data/raw/main/payload_f2.5_s6.0_r7.0_S1_seed42.csv")
+    files = glob.glob(str(RAW_DATA_DIR / "payload_f2.5_s6.0_r7.0_S1_seed42.csv"))
     if not files:
-        files = glob.glob("data/raw/main/*.csv")[:1]
+        files = glob.glob(str(RAW_DATA_DIR / "*.csv"))[:1]
     if not files:
-        print("data/raw/main/*.csv 없음.")
+        print(f"{RAW_DATA_DIR}/*.csv 없음.")
         return
     model, scaler, feat_cols = load_model()
     df  = pd.read_csv(files[0])
@@ -133,7 +137,7 @@ def run_ui():
         )
 
         if data_source == "CSV 재생 (demo)":
-            csvs = sorted(glob.glob("data/raw/main/*.csv"))
+            csvs = sorted(glob.glob(str(RAW_DATA_DIR / "*.csv")))
             if not csvs:
                 st.warning("data/raw/main/ 에 CSV 파일이 없습니다.")
             else:
@@ -179,7 +183,7 @@ def run_ui():
                         st.session_state.model     = m
                         st.session_state.scaler    = s
                         st.session_state.feat_cols = f
-                    df = pd.read_csv(f"data/raw/main/{selected}.csv")
+                    df = pd.read_csv(RAW_DATA_DIR / f"{selected}.csv")
                     st.session_state.df      = df
                     st.session_state.frame   = 0
                     st.session_state.history = []
@@ -351,8 +355,17 @@ def _render_csv_frame(st, alert_threshold, make_subplots, go):
 
 # ── Kafka 라이브 모드 ─────────────────────────────────────────────────────────
 def _render_kafka(st, alert_threshold, make_subplots, go):
-    parquets = sorted(
-        glob.glob(f"{SERVING_DIR}/**/*.parquet", recursive=True))
+    # foreachBatch가 생성한 batch_id 하위 Parquet 파일을 수정 시간순으로 찾는다.
+    try:
+        parquets = sorted(
+            (p for p in SERVING_DIR.rglob("*.parquet") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+        )
+    except OSError as e:
+        st.error(f"서빙 디렉터리 조회 오류: {e}")
+        time.sleep(REFRESH_SEC)
+        st.rerun()
+        return
 
     # serving 데이터 없을 때만 안내 표시
     if not parquets:
@@ -370,22 +383,61 @@ def _render_kafka(st, alert_threshold, make_subplots, go):
 
     # 데이터 로드
     try:
-        df_live = pd.concat([pd.read_parquet(p) for p in parquets[-20:]])
-        df_live = (df_live
-                   .sort_values("window_end")
-                   .drop_duplicates("window_end")
-                   .tail(60))
+        frames = []
+        for parquet_path in parquets[-20:]:
+            try:
+                frames.append(pd.read_parquet(parquet_path))
+            except Exception:
+                # Spark가 파일을 쓰는 짧은 순간에는 해당 파일만 건너뛴다.
+                continue
+
+        if not frames:
+            raise RuntimeError("읽을 수 있는 Parquet 파일이 아직 없습니다.")
+
+        df_live = pd.concat(frames, ignore_index=True)
+        df_live = (
+            df_live
+            .sort_values("window_end")
+            .drop_duplicates(
+                subset=["window_end", "drone_id"],
+                keep="last",
+            )
+            .tail(60)
+        )
     except Exception as e:
         st.error(f"데이터 읽기 오류: {e}")
         time.sleep(REFRESH_SEC)
         st.rerun()
         return
 
-    df_live["window_end"] = pd.to_datetime(df_live["window_end"], errors="coerce")
+    required_cols = {"window_end", "drone_id", "risk_prob", "is_alert"}
+    missing_cols = required_cols - set(df_live.columns)
+    if missing_cols:
+        st.error(
+            "Parquet 스키마에 필요한 컬럼이 없습니다: "
+            + ", ".join(sorted(missing_cols))
+        )
+        time.sleep(REFRESH_SEC)
+        st.rerun()
+        return
+
+    df_live["window_end"] = pd.to_datetime(
+        df_live["window_end"],
+        errors="coerce",
+    )
     df_live = df_live.dropna(subset=["window_end"])
     df_live = df_live.sort_values("window_end")
-    df_live = df_live.drop_duplicates(subset=["window_end"], keep="last")
+    df_live = df_live.drop_duplicates(
+        subset=["window_end", "drone_id"],
+        keep="last",
+    )
     df_recent = df_live.tail(30)
+
+    if df_recent.empty:
+        st.info("⏳ 처리된 윈도우가 아직 없습니다.")
+        time.sleep(REFRESH_SEC)
+        st.rerun()
+        return
 
     # 상태 카드
     n_alert = int((df_recent["is_alert"] == 1).sum())
